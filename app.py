@@ -14,8 +14,77 @@ SERVICE_TYPES = [
     'managed services', 'consulting', 'network'
 ]
 
+def search_google_api(query, api_key, search_engine_id, num_results=10):
+    """Search Google using Custom Search API"""
+    try:
+        base_url = "https://www.googleapis.com/customsearch/v1"
+        
+        params = {
+            'key': api_key,
+            'cx': search_engine_id,
+            'q': query,
+            'num': min(num_results, 10)  # Google API max is 10 per request
+        }
+        
+        response = requests.get(base_url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        links = []
+        if 'items' in data:
+            for item in data['items']:
+                links.append(item['link'])
+        
+        return links
+    except Exception as e:
+        st.error(f"Google Search API error: {str(e)}")
+        return []
+
+def search_google_scraping(query, num_results=10):
+    """Search Google by scraping (less reliable, may be blocked)"""
+    try:
+        # Google search URL
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}&num={num_results}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        response = requests.get(search_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract links from Google results
+        links = []
+        
+        # Google search result selectors (these change frequently)
+        selectors = ['h3 a', '.yuRUbf a', '.kCrYT a']
+        
+        for selector in selectors:
+            for link_elem in soup.select(selector):
+                href = link_elem.get('href')
+                if href and href.startswith('http') and 'google.com' not in href:
+                    if href not in links:  # Avoid duplicates
+                        links.append(href)
+                        if len(links) >= num_results:
+                            break
+            if links:
+                break
+        
+        return links
+    except Exception as e:
+        st.error(f"Google scraping error: {str(e)}")
+        return []
+
 def search_duckduckgo(query, num_results=10):
-    """Search DuckDuckGo and return list of URLs"""
+    """Search DuckDuckGo and return list of URLs (fallback option)"""
     try:
         # DuckDuckGo HTML search URL
         search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
@@ -40,7 +109,7 @@ def search_duckduckgo(query, num_results=10):
         
         return links
     except Exception as e:
-        st.error(f"Search error: {str(e)}")
+        st.error(f"DuckDuckGo search error: {str(e)}")
         return []
 
 def fetch_page_content(url):
@@ -193,8 +262,8 @@ def main():
     st.title("🔍 IT Contract Search & Analysis")
     st.markdown("Search for publicly announced IT contracts and extract structured information.")
     
-    # Search input
-    col1, col2 = st.columns([3, 1])
+    # Search configuration
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         search_query = st.text_input(
@@ -204,6 +273,13 @@ def main():
         )
     
     with col2:
+        search_engine = st.selectbox(
+            "Search Engine",
+            ["DuckDuckGo", "Google (Scraping)", "Google (API)"],
+            help="Choose search method"
+        )
+    
+    with col3:
         num_results = st.number_input(
             "Max Results", 
             min_value=5, 
@@ -212,11 +288,49 @@ def main():
             help="Number of search results to process"
         )
     
+    # Google API configuration (only show if Google API is selected)
+    if search_engine == "Google (API)":
+        st.info("🔑 Google Custom Search API requires free API key setup")
+        col1, col2 = st.columns(2)
+        with col1:
+            google_api_key = st.text_input(
+                "Google API Key", 
+                type="password",
+                help="Get free API key from Google Cloud Console"
+            )
+        with col2:
+            search_engine_id = st.text_input(
+                "Search Engine ID",
+                help="Create custom search engine at programmablesearchengine.google.com"
+            )
+        
+        if not google_api_key or not search_engine_id:
+            st.warning("⚠️ Google API Key and Search Engine ID are required for Google API search")
+    
+    elif search_engine == "Google (Scraping)":
+        st.warning("⚠️ Google scraping may be blocked or rate-limited. Use sparingly.")
+    
+    else:
+        st.info("ℹ️ DuckDuckGo is more reliable for automated searches")
+    
     if st.button("🔍 Search & Analyze", type="primary"):
         if search_query:
             with st.spinner("Searching for contract announcements..."):
-                # Search for URLs
-                urls = search_duckduckgo(search_query, num_results)
+                # Choose search method
+                urls = []
+                
+                if search_engine == "Google (API)":
+                    if google_api_key and search_engine_id:
+                        urls = search_google_api(search_query, google_api_key, search_engine_id, num_results)
+                    else:
+                        st.error("Please provide Google API Key and Search Engine ID")
+                        return
+                        
+                elif search_engine == "Google (Scraping)":
+                    urls = search_google_scraping(search_query, num_results)
+                    
+                else:  # DuckDuckGo
+                    urls = search_duckduckgo(search_query, num_results)
                 
                 if not urls:
                     st.error("No search results found. Please try a different query.")
@@ -307,6 +421,19 @@ def main():
     
     # Information sidebar
     with st.sidebar:
+        st.header("🔍 Search Options")
+        st.markdown("""
+        **DuckDuckGo**: Most reliable, no setup required
+        
+        **Google Scraping**: May be blocked, use sparingly
+        
+        **Google API**: Best results but requires:
+        1. Google Cloud account (free)
+        2. Enable Custom Search API
+        3. Create search engine ID
+        4. Get API key
+        """)
+        
         st.header("ℹ️ How it Works")
         st.markdown("""
         1. **Search**: Uses DuckDuckGo to find relevant pages
