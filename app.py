@@ -3,10 +3,11 @@ import requests
 import pandas as pd
 import re
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote_plus, urljoin, urlparse
 import time
 import json
+from typing import List, Dict, Optional
 
 # Service type taxonomy
 SERVICE_TYPES = [
@@ -15,125 +16,65 @@ SERVICE_TYPES = [
     'managed services', 'consulting', 'network'
 ]
 
-# Predefined IT contract sources (more reliable than search scraping)
-CONTRACT_SOURCES = [
-    "https://www.fbo.gov",
-    "https://sam.gov",
-    "https://www.contractsforaccess.com",
-    "https://govtribe.com",
-    "https://www.fedconnect.net",
-    "https://www.govwin.com",
-    "https://www.usaspending.gov",
-    "https://www.fpds.gov"
-]
+# Initialize session state for saved URLs
+if 'saved_urls' not in st.session_state:
+    st.session_state.saved_urls = []
 
-def search_searx_instance(query, num_results=10):
-    """Search using SearX metasearch engine"""
-    searx_instances = [
-        "https://searx.be",
-        "https://searx.info",
-        "https://searx.tiekoetter.com",
-        "https://search.mdosch.de",
-        "https://searx.org"
-    ]
-    
-    for instance in searx_instances:
-        try:
-            search_url = f"{instance}/search"
-            params = {
-                'q': query,
-                'format': 'json',
-                'engines': 'google,bing,duckduckgo',
-                'safesearch': '0'
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.get(search_url, params=params, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                links = []
-                
-                if 'results' in data:
-                    for result in data['results'][:num_results]:
-                        if 'url' in result:
-                            links.append(result['url'])
-                
-                if links:
-                    return links
-                    
-        except Exception as e:
-            continue
-    
-    return []
+def load_saved_urls():
+    """Load saved URLs from session state"""
+    return st.session_state.saved_urls
 
-def search_direct_sources(query_terms):
-    """Search directly from known contract announcement sources"""
-    # For demo purposes, return some realistic test URLs
-    # In production, you'd implement specific scrapers for each source
-    test_urls = [
-        "https://www.defense.gov/News/Contracts/",
-        "https://www.gsa.gov/about-us/newsroom/news-releases",
-        "https://www.nasa.gov/news/contracts-news/",
-        "https://www.dhs.gov/news-releases/press-releases",
-        "https://www.energy.gov/articles/department-energy-announces",
-        "https://www.treasury.gov/press-center/press-releases/",
-        "https://www.commerce.gov/news/press-releases",
-        "https://www.hhs.gov/about/news/",
-        "https://www.dot.gov/briefing-room/dot-announces",
-        "https://www.va.gov/opa/pressrel/"
-    ]
-    
-    return test_urls
+def save_url(url: str, description: str = ""):
+    """Save a URL to session state"""
+    if url and url not in [item['url'] for item in st.session_state.saved_urls]:
+        st.session_state.saved_urls.append({
+            'url': url,
+            'description': description,
+            'added_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
 
-def manual_url_input():
-    """Allow users to manually input URLs"""
-    st.subheader("📝 Manual URL Input (Recommended)")
-    st.info("Since search engines block automated access, you can paste URLs directly from contract announcement sites.")
-    
-    urls_text = st.text_area(
-        "Paste URLs (one per line):",
-        placeholder="""https://www.defense.gov/News/Contracts/Contract/Article/3234567/
-https://www.gsa.gov/about-us/newsroom/news-releases/2024/01/15/
-https://sam.gov/opp/12345/view""",
-        height=150
-    )
-    
-    if urls_text:
-        urls = [url.strip() for url in urls_text.split('\n') if url.strip()]
-        return urls
-    
-    return []
+def remove_saved_url(index: int):
+    """Remove a saved URL by index"""
+    if 0 <= index < len(st.session_state.saved_urls):
+        st.session_state.saved_urls.pop(index)
 
-def search_with_fallbacks(query, num_results=10):
-    """Try multiple search methods with fallbacks"""
-    st.write("🔍 Trying search methods...")
-    
-    # Method 1: Try SearX metasearch
-    with st.spinner("Trying SearX metasearch engines..."):
-        urls = search_searx_instance(query, num_results)
-        if urls:
-            st.success(f"✅ SearX found {len(urls)} results")
-            return urls
-        else:
-            st.warning("❌ SearX instances unavailable")
-    
-    # Method 2: Direct sources
-    with st.spinner("Checking direct contract sources..."):
-        urls = search_direct_sources(query)
-        if urls:
-            st.info(f"📋 Using {len(urls)} known contract sources")
-            return urls[:num_results]
-    
-    # Method 3: Return empty for manual input
-    st.error("🚫 Automated search unavailable. Please use manual URL input below.")
-    return []
+def search_duckduckgo(query: str, num_results: int = 10, date_range: Optional[tuple] = None):
+    """Search DuckDuckGo and return list of URLs with date filtering"""
+    try:
+        # Add date range to query if specified
+        search_query = query
+        if date_range:
+            start_date, end_date = date_range
+            # Add date range operators for DuckDuckGo (limited support)
+            search_query += f" after:{start_date.strftime('%Y-%m-%d')} before:{end_date.strftime('%Y-%m-%d')}"
+        
+        search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(search_query)}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(search_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract links from DuckDuckGo results
+        links = []
+        for link_elem in soup.find_all('a', {'class': 'result__a'}):
+            href = link_elem.get('href')
+            if href and href.startswith('http'):
+                links.append(href)
+                if len(links) >= num_results:
+                    break
+        
+        return links
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return []
 
-def fetch_page_content(url):
-    """Fetch and parse page content"""
+def fetch_page_content(url: str):
+    """Fetch and parse page content, return both raw text and structured data"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -143,6 +84,13 @@ def fetch_page_content(url):
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract title
+        title = soup.find('title')
+        title_text = title.get_text().strip() if title else "No title found"
+        
+        # Try to extract publication date from meta tags
+        pub_date = extract_publication_date(soup)
         
         # Remove script and style elements
         for script in soup(["script", "style"]):
@@ -154,15 +102,91 @@ def fetch_page_content(url):
         # Clean up text
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = ' '.join(chunk for chunk in chunks if chunk)
+        clean_text = ' '.join(chunk for chunk in chunks if chunk)
         
-        return text.lower()
+        return {
+            'text': clean_text.lower(),
+            'original_text': clean_text,
+            'title': title_text,
+            'publication_date': pub_date
+        }
     except Exception as e:
         return None
 
-def extract_contract_value(text):
+def extract_publication_date(soup):
+    """Extract publication date from HTML meta tags and content"""
+    # Try various meta tag patterns
+    date_selectors = [
+        ('meta', {'property': 'article:published_time'}),
+        ('meta', {'name': 'publishdate'}),
+        ('meta', {'name': 'publication-date'}),
+        ('meta', {'name': 'date'}),
+        ('meta', {'property': 'og:published_time'}),
+        ('time', {'datetime': True}),
+    ]
+    
+    for tag_name, attrs in date_selectors:
+        element = soup.find(tag_name, attrs)
+        if element:
+            date_str = element.get('content') or element.get('datetime') or element.get_text()
+            if date_str:
+                try:
+                    # Try to parse various date formats
+                    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%fZ', '%B %d, %Y']:
+                        try:
+                            return datetime.strptime(date_str.split('T')[0], '%Y-%m-%d').strftime('%Y-%m-%d')
+                        except:
+                            continue
+                except:
+                    continue
+    
+    # Fallback: look for date patterns in text
+    text = soup.get_text()
+    date_patterns = [
+        r'(\w+ \d{1,2}, \d{4})',  # January 15, 2024
+        r'(\d{1,2}/\d{1,2}/\d{4})',  # 01/15/2024
+        r'(\d{4}-\d{2}-\d{2})',  # 2024-01-15
+    ]
+    
+    for pattern in date_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            return matches[0]
+    
+    return datetime.now().strftime('%Y-%m-%d')  # Default to today
+
+def generate_summary(text: str, max_sentences: int = 3) -> str:
+    """Generate a simple extractive summary from text"""
+    if not text:
+        return "No summary available"
+    
+    # Split into sentences
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    
+    if not sentences:
+        return "No summary available"
+    
+    # Simple scoring: prefer sentences with contract-related keywords
+    keywords = ['contract', 'agreement', 'award', 'million', 'services', 'company', 'announced']
+    scored_sentences = []
+    
+    for sentence in sentences[:10]:  # Only look at first 10 sentences
+        score = sum(1 for keyword in keywords if keyword.lower() in sentence.lower())
+        scored_sentences.append((score, sentence))
+    
+    # Sort by score and take top sentences
+    scored_sentences.sort(key=lambda x: x[0], reverse=True)
+    top_sentences = [s[1] for s in scored_sentences[:max_sentences]]
+    
+    summary = '. '.join(top_sentences)
+    if len(summary) > 500:
+        summary = summary[:500] + "..."
+    
+    return summary
+
+def extract_contract_value(text: str):
     """Extract contract value in USD using regex"""
-    # Patterns for currency values
     patterns = [
         r'\$\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*million',
         r'\$\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*m\b',
@@ -188,12 +212,11 @@ def extract_contract_value(text):
             elif 'thousand' in pattern or ' k\\b' in pattern:
                 return value / 1000
             else:
-                # Assume raw dollar amount, convert to millions
                 return value / 1000000
     
     return None
 
-def extract_duration(text):
+def extract_duration(text: str):
     """Extract contract duration in months"""
     patterns = [
         r'(\d+)\s*year[s]?',
@@ -217,7 +240,7 @@ def extract_duration(text):
     
     return None
 
-def extract_organizations(text):
+def extract_organizations(text: str):
     """Extract organization names using regex patterns"""
     patterns = [
         r'\b([A-Z][a-zA-Z\s&]+(?:Inc\.?|Corp\.?|Corporation|Company|Co\.?|Ltd\.?|Limited|LLC|Group|Solutions|Systems|Technologies|Services))\b',
@@ -230,12 +253,12 @@ def extract_organizations(text):
         matches = re.findall(pattern, text, re.IGNORECASE)
         for match in matches:
             org = match.strip()
-            if len(org) > 5 and org not in organizations:  # Filter out very short matches
+            if len(org) > 5 and org not in organizations:
                 organizations.append(org)
     
-    return organizations[:5]  # Return first 5 matches
+    return organizations[:5]
 
-def extract_service_type(text):
+def extract_service_type(text: str):
     """Extract service type from predefined taxonomy"""
     text_lower = text.lower()
     
@@ -245,12 +268,15 @@ def extract_service_type(text):
     
     return None
 
-def process_contract_page(url):
+def process_contract_page(url: str):
     """Process a single page and extract contract information"""
-    content = fetch_page_content(url)
+    content_data = fetch_page_content(url)
     
-    if not content:
+    if not content_data:
         return None
+    
+    content = content_data['text']
+    original_text = content_data['original_text']
     
     # Filter for pages mentioning "contract"
     if 'contract' not in content:
@@ -259,8 +285,9 @@ def process_contract_page(url):
     # Extract information
     contract_value = extract_contract_value(content)
     duration = extract_duration(content)
-    organizations = extract_organizations(content)
+    organizations = extract_organizations(original_text)
     service_type = extract_service_type(content)
+    summary = generate_summary(original_text)
     
     # Assign vendor and client
     vendor = organizations[0] if len(organizations) > 0 else None
@@ -268,8 +295,10 @@ def process_contract_page(url):
     
     return {
         'URL': url,
+        'Title': content_data['title'],
+        'Announcement Date': content_data['publication_date'],
+        'Summary': summary,
         'Estimated Value (USD Millions)': contract_value,
-        'Announcement Date': datetime.now().strftime('%Y-%m-%d'),
         'Vendor': vendor,
         'Client': client,
         'Contract Duration (Months)': duration,
@@ -279,164 +308,152 @@ def process_contract_page(url):
 def main():
     st.set_page_config(page_title="IT Contract Search", page_icon="🔍", layout="wide")
     
-    st.title("🔍 IT Contract Search & Analysis")
-    st.markdown("Search for publicly announced IT contracts and extract structured information.")
+    st.title("🔍 Enhanced IT Contract Search & Analysis")
+    st.markdown("Search for publicly announced IT contracts and extract structured information with date filtering and manual URL management.")
     
-    # Show current limitations
-    st.warning("⚠️ **Important**: Most search engines now block automated scraping. Choose from these options:")
+    # Sidebar for saved URLs management
+    with st.sidebar:
+        st.header("📎 Saved URLs")
+        
+        # Add new URL
+        with st.expander("Add New URL"):
+            new_url = st.text_input("URL", key="new_url")
+            new_description = st.text_input("Description (optional)", key="new_desc")
+            if st.button("Save URL"):
+                if new_url:
+                    save_url(new_url, new_description)
+                    st.success("URL saved!")
+                    st.rerun()
+        
+        # Display saved URLs
+        saved_urls = load_saved_urls()
+        if saved_urls:
+            st.subheader("Saved URLs")
+            for i, url_data in enumerate(saved_urls):
+                with st.container():
+                    st.write(f"**{url_data['description'] or 'No description'}**")
+                    st.write(f"URL: {url_data['url'][:50]}...")
+                    st.write(f"Added: {url_data['added_date']}")
+                    if st.button(f"Remove", key=f"remove_{i}"):
+                        remove_saved_url(i)
+                        st.rerun()
+                    st.divider()
+        
+        # Export/Import saved URLs
+        if saved_urls:
+            urls_json = json.dumps(saved_urls, indent=2)
+            st.download_button(
+                "📥 Export Saved URLs",
+                data=urls_json,
+                file_name=f"saved_urls_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
     
-    # Create tabs for different approaches
-    tab1, tab2, tab3 = st.tabs(["🔗 Manual URLs", "🔍 Auto Search", "🔑 Google API"])
+    # Main search interface
+    tab1, tab2 = st.tabs(["🔍 Web Search", "📎 Process Saved URLs"])
     
     with tab1:
-        st.header("Manual URL Input (Most Reliable)")
-        st.info("💡 **Recommended**: Copy URLs from government contract sites for best results")
-        
-        urls = manual_url_input()
-        
-        if urls:
-            if st.button("🔍 Analyze Manual URLs", type="primary"):
-                process_urls(urls)
-        
-        # Show helpful contract sources
-        st.subheader("📋 Suggested Contract Sources")
-        col1, col2 = st.columns(2)
+        # Search inputs
+        col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.markdown("""
-            **Government Sources:**
-            - [SAM.gov](https://sam.gov) - Federal contracts
-            - [FBO.gov](https://fbo.gov) - Business opportunities
-            - [USASpending.gov](https://usaspending.gov) - Federal spending
-            - [FPDS.gov](https://fpds.gov) - Procurement data
-            """)
+            search_query = st.text_input(
+                "Search Query", 
+                value="IT services contract announcement",
+                help="Enter search terms to find IT contract announcements"
+            )
         
         with col2:
-            st.markdown("""
-            **Agency Sources:**
-            - [Defense.gov Contracts](https://defense.gov/News/Contracts/)
-            - [GSA News](https://gsa.gov/about-us/newsroom/)
-            - [NASA Contracts](https://nasa.gov/news/contracts-news/)
-            - [DHS Press Releases](https://dhs.gov/news-releases/)
-            """)
-    
-    with tab2:
-        st.header("Automated Search (Limited)")
-        st.warning("🚨 May not work due to anti-bot measures")
+            num_results = st.number_input(
+                "Max Results", 
+                min_value=5, 
+                max_value=20, 
+                value=10,
+                help="Number of search results to process"
+            )
         
-        search_query = st.text_input(
-            "Search Query", 
-            value="IT services contract announcement",
-            help="Enter search terms to find IT contract announcements"
-        )
+        # Date range filter
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "Start Date",
+                value=datetime.now() - timedelta(days=30),
+                help="Filter results from this date onwards"
+            )
         
-        num_results = st.number_input(
-            "Max Results", 
-            min_value=5, 
-            max_value=20, 
-            value=10,
-            help="Number of search results to process"
-        )
+        with col2:
+            end_date = st.date_input(
+                "End Date",
+                value=datetime.now(),
+                help="Filter results up to this date"
+            )
         
-        if st.button("🔍 Try Auto Search", type="secondary"):
+        if st.button("🔍 Search & Analyze", type="primary"):
             if search_query:
-                urls = search_with_fallbacks(search_query, num_results)
-                if urls:
-                    process_urls(urls)
-    
-    with tab3:
-        st.header("Google Custom Search API")
-        st.info("🔑 Requires free Google API setup but most reliable for automated search")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            google_api_key = st.text_input(
-                "Google API Key", 
-                type="password",
-                help="Get free API key from Google Cloud Console"
-            )
-        with col2:
-            search_engine_id = st.text_input(
-                "Search Engine ID",
-                help="Create custom search engine at programmablesearchengine.google.com"
-            )
-        
-        search_query_api = st.text_input(
-            "Search Query", 
-            value="IT services contract announcement",
-            key="api_query"
-        )
-        
-        if st.button("🔍 Search with Google API", type="primary"):
-            if google_api_key and search_engine_id and search_query_api:
-                urls = search_google_api(search_query_api, google_api_key, search_engine_id, 10)
-                if urls:
+                date_range = (start_date, end_date) if start_date and end_date else None
+                
+                with st.spinner("Searching for contract announcements..."):
+                    urls = search_duckduckgo(search_query, num_results, date_range)
+                    
+                    if not urls:
+                        st.error("No search results found. Please try a different query.")
+                        return
+                    
+                    st.success(f"Found {len(urls)} URLs to analyze")
                     process_urls(urls)
             else:
-                st.error("Please provide Google API Key and Search Engine ID")
-
-def search_google_api(query, api_key, search_engine_id, num_results=10):
-    """Search Google using Custom Search API"""
-    try:
-        base_url = "https://www.googleapis.com/customsearch/v1"
+                st.error("Please enter a search query.")
+    
+    with tab2:
+        st.subheader("Process Saved URLs")
+        saved_urls = load_saved_urls()
         
-        params = {
-            'key': api_key,
-            'cx': search_engine_id,
-            'q': query,
-            'num': min(num_results, 10)  # Google API max is 10 per request
-        }
-        
-        response = requests.get(base_url, params=params, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        links = []
-        if 'items' in data:
-            for item in data['items']:
-                links.append(item['link'])
-        
-        st.success(f"✅ Google API found {len(links)} results")
-        return links
-    except Exception as e:
-        st.error(f"Google Search API error: {str(e)}")
-        return []
-
-def process_urls(urls):
-    """Process the URLs and extract contract information"""
-    with st.spinner("Analyzing contract pages..."):
-        # Process each URL
-        results = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for i, url in enumerate(urls):
-            status_text.text(f"Processing {i+1}/{len(urls)}: {url[:60]}...")
+        if saved_urls:
+            selected_urls = st.multiselect(
+                "Select URLs to process:",
+                options=range(len(saved_urls)),
+                format_func=lambda x: f"{saved_urls[x]['description'] or 'No description'} - {saved_urls[x]['url'][:50]}...",
+                default=list(range(len(saved_urls)))
+            )
             
-            try:
-                result = process_contract_page(url)
-                if result:
-                    results.append(result)
-            except Exception as e:
-                st.warning(f"Error processing {url}: {str(e)}")
-            
-            progress_bar.progress((i + 1) / len(urls))
-            time.sleep(0.5)  # Rate limiting
-        
-        status_text.empty()
-        progress_bar.empty()
-        
-        if results:
-            display_results(results)
+            if st.button("📊 Process Selected URLs", type="primary"):
+                if selected_urls:
+                    urls_to_process = [saved_urls[i]['url'] for i in selected_urls]
+                    process_urls(urls_to_process)
+                else:
+                    st.warning("Please select at least one URL to process.")
         else:
-            st.warning("No qualifying contract announcements found. Try different URLs or check if they contain contract information.")
+            st.info("No saved URLs found. Add some URLs in the sidebar to get started.")
 
-def display_results(results):
-    """Display the contract analysis results"""
-def display_results(results):
-    """Display the contract analysis results"""
-    # Display results
+def process_urls(urls: List[str]):
+    """Process a list of URLs and display results"""
+    results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, url in enumerate(urls):
+        status_text.text(f"Processing {i+1}/{len(urls)}: {url[:60]}...")
+        
+        try:
+            result = process_contract_page(url)
+            if result:
+                results.append(result)
+        except Exception as e:
+            st.warning(f"Error processing {url}: {str(e)}")
+        
+        progress_bar.progress((i + 1) / len(urls))
+        time.sleep(0.5)  # Rate limiting
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    if results:
+        display_results(results)
+    else:
+        st.warning("No qualifying contract announcements found. Try adjusting your search terms or check your saved URLs.")
+
+def display_results(results: List[Dict]):
+    """Display processed results with enhanced formatting"""
     df = pd.DataFrame(results)
     
     st.success(f"Found {len(results)} qualifying contract announcements!")
@@ -460,19 +477,34 @@ def display_results(results):
         vendors = df['Vendor'].dropna().nunique()
         st.metric("Unique Vendors", vendors)
     
-    # Display data table
+    # Display detailed results
     st.subheader("📊 Contract Details")
     
-    # Format display
-    display_df = df.copy()
-    display_df['Estimated Value (USD Millions)'] = display_df['Estimated Value (USD Millions)'].apply(
-        lambda x: f"${x:.2f}M" if pd.notna(x) else "N/A"
-    )
-    display_df['Contract Duration (Months)'] = display_df['Contract Duration (Months)'].apply(
-        lambda x: f"{int(x)} months" if pd.notna(x) else "N/A"
-    )
-    
-    st.dataframe(display_df, use_container_width=True)
+    for idx, row in df.iterrows():
+        with st.expander(f"📄 {row['Title'][:100]}..." if len(row['Title']) > 100 else row['Title']):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.write("**Summary:**")
+                st.write(row['Summary'])
+                
+                st.write(f"**URL:** [{row['URL']}]({row['URL']})")
+                st.write(f"**Announcement Date:** {row['Announcement Date']}")
+                
+                if row['Vendor']:
+                    st.write(f"**Vendor:** {row['Vendor']}")
+                if row['Client']:
+                    st.write(f"**Client:** {row['Client']}")
+            
+            with col2:
+                if row['Estimated Value (USD Millions)']:
+                    st.metric("Contract Value", f"${row['Estimated Value (USD Millions)']:.2f}M")
+                
+                if row['Contract Duration (Months)']:
+                    st.metric("Duration", f"{int(row['Contract Duration (Months)'])} months")
+                
+                if row['Service Type']:
+                    st.write(f"**Service Type:** {row['Service Type']}")
     
     # Download option
     csv = df.to_csv(index=False)
@@ -488,53 +520,6 @@ def display_results(results):
         st.subheader("🏷️ Service Type Breakdown")
         service_counts = df['Service Type'].value_counts()
         st.bar_chart(service_counts)
-    
-    # Information sidebar
-    with st.sidebar:
-        st.header("💡 Quick Start Guide")
-        st.markdown("""
-        **Best Approach:**
-        1. Visit government contract sites
-        2. Copy URLs of contract announcements
-        3. Paste into "Manual URLs" tab
-        4. Click "Analyze Manual URLs"
-        
-        **Good Sources:**
-        - SAM.gov (search "IT services")
-        - Defense.gov contracts section
-        - Agency press release pages
-        """)
-        
-        st.header("🔍 Search Issues?")
-        st.markdown("""
-        **Why search doesn't work:**
-        - Search engines block bots
-        - CAPTCHAs and rate limits
-        - IP blocking for automation
-        
-        **Solutions:**
-        1. Manual URL input (recommended)
-        2. Google Custom Search API
-        3. Use specific contract databases
-        """)
-        
-        st.header("ℹ️ How Analysis Works")
-        st.markdown("""
-        1. **Fetch**: Downloads webpage content
-        2. **Filter**: Only processes pages mentioning "contract"
-        3. **Extract**: Uses regex patterns to find:
-           - Contract values ($X million, $Y thousand)
-           - Duration (X months, Y years)
-           - Organizations (Corp, Inc, Ltd, etc.)
-           - Service types from taxonomy
-        4. **Structure**: Organizes data into standardized format
-        5. **Export**: Download results as CSV
-        """)
-        
-        st.header("🏷️ Service Types")
-        st.markdown("Detected service types:")
-        for service in SERVICE_TYPES:
-            st.text(f"• {service}")
 
 if __name__ == "__main__":
     main()
