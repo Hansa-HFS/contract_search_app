@@ -315,15 +315,99 @@ def main():
     with st.sidebar:
         st.header("📎 Saved URLs")
         
-        # Add new URL
-        with st.expander("Add New URL"):
-            new_url = st.text_input("URL", key="new_url")
-            new_description = st.text_input("Description (optional)", key="new_desc")
-            if st.button("Save URL"):
-                if new_url:
-                    save_url(new_url, new_description)
-                    st.success("URL saved!")
-                    st.rerun()
+        # Add URLs (single or bulk)
+        with st.expander("Add URLs"):
+            add_method = st.radio(
+                "Choose method:",
+                ["Single URL", "Bulk Import"],
+                key="add_method"
+            )
+            
+            if add_method == "Single URL":
+                new_url = st.text_input("URL", key="new_url")
+                new_description = st.text_input("Description (optional)", key="new_desc")
+                if st.button("Save URL"):
+                    if new_url:
+                        save_url(new_url, new_description)
+                        st.success("URL saved!")
+                        st.rerun()
+            
+            else:  # Bulk Import
+                st.write("**Bulk Import Options:**")
+                
+                # Text area for multiple URLs
+                bulk_urls_text = st.text_area(
+                    "Paste URLs (one per line):",
+                    height=150,
+                    help="Enter one URL per line. You can copy-paste from spreadsheets or documents.",
+                    key="bulk_urls"
+                )
+                
+                # File upload option
+                uploaded_file = st.file_uploader(
+                    "Or upload a text/CSV file with URLs:",
+                    type=['txt', 'csv'],
+                    help="Upload a .txt file with one URL per line, or a .csv file with URLs in the first column",
+                    key="bulk_file"
+                )
+                
+                bulk_description = st.text_input(
+                    "Default description for all URLs (optional):",
+                    key="bulk_desc"
+                )
+                
+                if st.button("Import Bulk URLs", type="secondary"):
+                    urls_to_add = []
+                    
+                    # Process text area input
+                    if bulk_urls_text:
+                        for line in bulk_urls_text.strip().split('\n'):
+                            url = line.strip()
+                            if url and (url.startswith('http://') or url.startswith('https://')):
+                                urls_to_add.append(url)
+                    
+                    # Process uploaded file
+                    if uploaded_file:
+                        try:
+                            content = uploaded_file.read().decode('utf-8')
+                            if uploaded_file.name.endswith('.csv'):
+                                # Parse CSV and extract URLs from first column
+                                lines = content.strip().split('\n')
+                                for line in lines[1:]:  # Skip header
+                                    if line.strip():
+                                        url = line.split(',')[0].strip().strip('"\'')
+                                        if url and (url.startswith('http://') or url.startswith('https://')):
+                                            urls_to_add.append(url)
+                            else:
+                                # Plain text file
+                                for line in content.strip().split('\n'):
+                                    url = line.strip()
+                                    if url and (url.startswith('http://') or url.startswith('https://')):
+                                        urls_to_add.append(url)
+                        except Exception as e:
+                            st.error(f"Error reading file: {str(e)}")
+                    
+                    # Add URLs to saved list
+                    if urls_to_add:
+                        added_count = 0
+                        duplicate_count = 0
+                        
+                        for url in urls_to_add:
+                            if url not in [item['url'] for item in st.session_state.saved_urls]:
+                                save_url(url, bulk_description)
+                                added_count += 1
+                            else:
+                                duplicate_count += 1
+                        
+                        if added_count > 0:
+                            st.success(f"Added {added_count} new URLs!")
+                        if duplicate_count > 0:
+                            st.info(f"Skipped {duplicate_count} duplicate URLs.")
+                        
+                        if added_count > 0:
+                            st.rerun()
+                    else:
+                        st.warning("No valid URLs found. Make sure URLs start with http:// or https://")
         
         # Display saved URLs
         saved_urls = load_saved_urls()
@@ -339,15 +423,82 @@ def main():
                         st.rerun()
                     st.divider()
         
-        # Export/Import saved URLs
+        # Bulk management options
         if saved_urls:
-            urls_json = json.dumps(saved_urls, indent=2)
-            st.download_button(
-                "📥 Export Saved URLs",
-                data=urls_json,
-                file_name=f"saved_urls_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json"
-            )
+            st.subheader("📋 Bulk Management")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🗑️ Clear All URLs", help="Remove all saved URLs"):
+                    st.session_state.saved_urls = []
+                    st.success("All URLs cleared!")
+                    st.rerun()
+            
+            with col2:
+                # Quick stats
+                st.metric("Total Saved URLs", len(saved_urls))
+            with col1:
+                urls_json = json.dumps(saved_urls, indent=2)
+                st.download_button(
+                    "📥 Export URLs (JSON)",
+                    data=urls_json,
+                    file_name=f"saved_urls_{datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+            
+            with col2:
+                # Import from JSON file
+                import_file = st.file_uploader(
+                    "Import URLs from JSON:",
+                    type=['json'],
+                    help="Upload a previously exported JSON file",
+                    key="import_json"
+                )
+                
+                if import_file and st.button("Import JSON"):
+                    try:
+                        imported_data = json.loads(import_file.read().decode('utf-8'))
+                        added_count = 0
+                        
+                        for url_data in imported_data:
+                            if url_data.get('url') and url_data['url'] not in [item['url'] for item in st.session_state.saved_urls]:
+                                st.session_state.saved_urls.append(url_data)
+                                added_count += 1
+                        
+                        if added_count > 0:
+                            st.success(f"Imported {added_count} URLs!")
+                            st.rerun()
+                        else:
+                            st.info("No new URLs to import.")
+                    except Exception as e:
+                        st.error(f"Error importing file: {str(e)}")
+        
+        # Additional help section
+        with st.expander("ℹ️ Bulk Import Help"):
+            st.markdown("""
+            **Supported formats for bulk import:**
+            
+            **Text Area:**
+            - One URL per line
+            - Copy-paste from any source
+            - Invalid URLs are automatically filtered out
+            
+            **File Upload:**
+            - **.txt files**: One URL per line
+            - **.csv files**: URLs in the first column (header row ignored)
+            
+            **Examples:**
+            ```
+            https://example.com/press-release-1
+            https://example.com/press-release-2
+            https://example.com/press-release-3
+            ```
+            
+            **Tips:**
+            - You can copy URLs from Excel/Google Sheets and paste directly
+            - Duplicate URLs are automatically skipped
+            - Only URLs starting with http:// or https:// are accepted
+            """)
     
     # Main search interface
     tab1, tab2 = st.tabs(["🔍 Web Search", "📎 Process Saved URLs"])
