@@ -308,8 +308,8 @@ def process_contract_page(url: str):
 def main():
     st.set_page_config(page_title="IT Contract Search", page_icon="🔍", layout="wide")
     
-    st.title("🔍 Enhanced IT Contract Search & Analysis")
-    st.markdown("Search for publicly announced IT contracts and extract structured information with date filtering and manual URL management.")
+    st.title("🔍 IT Contract Analysis with Date Filtering")
+    st.markdown("Process manually saved IT contract URLs with optional date range filtering for targeted analysis.")
     
     # Sidebar for saved URLs management
     with st.sidebar:
@@ -500,84 +500,66 @@ def main():
             - Only URLs starting with http:// or https:// are accepted
             """)
     
-    # Main search interface
-    tab1, tab2 = st.tabs(["🔍 Web Search", "📎 Process Saved URLs"])
+    # Main processing interface
+    st.subheader("📊 Process Saved URLs with Date Filtering")
+    saved_urls = load_saved_urls()
     
-    with tab1:
-        # Search inputs
-        col1, col2 = st.columns([2, 1])
+    if saved_urls:
+        # Date range filter
+        st.write("**Filter by Announcement Date:**")
+        col1, col2, col3 = st.columns([1, 1, 1])
         
         with col1:
-            search_query = st.text_input(
-                "Search Query", 
-                value="IT services contract announcement",
-                help="Enter search terms to find IT contract announcements"
+            use_date_filter = st.checkbox(
+                "Enable date filtering",
+                value=False,
+                help="Filter processed results by announcement date"
             )
         
         with col2:
-            num_results = st.number_input(
-                "Max Results", 
-                min_value=5, 
-                max_value=20, 
-                value=10,
-                help="Number of search results to process"
-            )
-        
-        # Date range filter
-        col1, col2 = st.columns(2)
-        with col1:
             start_date = st.date_input(
                 "Start Date",
                 value=datetime.now() - timedelta(days=30),
-                help="Filter results from this date onwards"
+                help="Include announcements from this date onwards",
+                disabled=not use_date_filter
             )
         
-        with col2:
+        with col3:
             end_date = st.date_input(
                 "End Date",
                 value=datetime.now(),
-                help="Filter results up to this date"
+                help="Include announcements up to this date",
+                disabled=not use_date_filter
             )
         
-        if st.button("🔍 Search & Analyze", type="primary"):
-            if search_query:
-                date_range = (start_date, end_date) if start_date and end_date else None
-                
-                with st.spinner("Searching for contract announcements..."):
-                    urls = search_duckduckgo(search_query, num_results, date_range)
-                    
-                    if not urls:
-                        st.error("No search results found. Please try a different query.")
-                        return
-                    
-                    st.success(f"Found {len(urls)} URLs to analyze")
-                    process_urls(urls)
+        # URL selection
+        st.write("**Select URLs to Process:**")
+        selected_urls = st.multiselect(
+            "Choose URLs:",
+            options=range(len(saved_urls)),
+            format_func=lambda x: f"{saved_urls[x]['description'] or 'No description'} - {saved_urls[x]['url'][:50]}...",
+            default=list(range(len(saved_urls)))
+        )
+        
+        if st.button("📊 Process Selected URLs", type="primary"):
+            if selected_urls:
+                urls_to_process = [saved_urls[i]['url'] for i in selected_urls]
+                date_range = (start_date, end_date) if use_date_filter else None
+                process_urls_with_date_filter(urls_to_process, date_range)
             else:
-                st.error("Please enter a search query.")
-    
-    with tab2:
-        st.subheader("Process Saved URLs")
-        saved_urls = load_saved_urls()
-        
-        if saved_urls:
-            selected_urls = st.multiselect(
-                "Select URLs to process:",
-                options=range(len(saved_urls)),
-                format_func=lambda x: f"{saved_urls[x]['description'] or 'No description'} - {saved_urls[x]['url'][:50]}...",
-                default=list(range(len(saved_urls)))
-            )
-            
-            if st.button("📊 Process Selected URLs", type="primary"):
-                if selected_urls:
-                    urls_to_process = [saved_urls[i]['url'] for i in selected_urls]
-                    process_urls(urls_to_process)
-                else:
-                    st.warning("Please select at least one URL to process.")
-        else:
-            st.info("No saved URLs found. Add some URLs in the sidebar to get started.")
+                st.warning("Please select at least one URL to process.")
+    else:
+        st.info("No saved URLs found. Add some URLs in the sidebar to get started.")
+        st.markdown("""
+        **To get started:**
+        1. Use the sidebar to add URLs (single or bulk import)
+        2. Select which URLs to process
+        3. Optionally set a date range filter
+        4. Click "Process Selected URLs"
+        """)
 
-def process_urls(urls: List[str]):
-    """Process a list of URLs and display results"""
+def process_urls_with_date_filter(urls: List[str], date_range: Optional[tuple] = None):
+    """Process a list of URLs with optional date filtering"""
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -588,7 +570,25 @@ def process_urls(urls: List[str]):
         try:
             result = process_contract_page(url)
             if result:
-                results.append(result)
+                # Apply date filter if specified
+                if date_range:
+                    start_date, end_date = date_range
+                    try:
+                        # Parse the announcement date
+                        announcement_date = datetime.strptime(result['Announcement Date'], '%Y-%m-%d').date()
+                        
+                        # Check if date is within range
+                        if start_date <= announcement_date <= end_date:
+                            results.append(result)
+                        else:
+                            st.info(f"Filtered out: {result['Title'][:50]}... (Date: {result['Announcement Date']})")
+                    except (ValueError, TypeError):
+                        # If date parsing fails, include the result but note the issue
+                        result['Announcement Date'] = f"{result['Announcement Date']} (date format unclear)"
+                        results.append(result)
+                        st.warning(f"Could not parse date for: {url[:50]}...")
+                else:
+                    results.append(result)
         except Exception as e:
             st.warning(f"Error processing {url}: {str(e)}")
         
@@ -599,9 +599,16 @@ def process_urls(urls: List[str]):
     progress_bar.empty()
     
     if results:
+        # Show filtering summary if date filter was used
+        if date_range:
+            st.info(f"Date filter applied: {date_range[0]} to {date_range[1]} - Found {len(results)} contracts in date range")
+        
         display_results(results)
     else:
-        st.warning("No qualifying contract announcements found. Try adjusting your search terms or check your saved URLs.")
+        if date_range:
+            st.warning(f"No contracts found within the date range {date_range[0]} to {date_range[1]}. Try expanding your date range or check if the URLs contain valid contract announcements.")
+        else:
+            st.warning("No qualifying contract announcements found. Check if your saved URLs contain valid contract announcements.")
 
 def display_results(results: List[Dict]):
     """Display processed results with enhanced formatting"""
