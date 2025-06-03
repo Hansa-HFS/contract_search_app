@@ -111,6 +111,7 @@ def fetch_page_content(url: str):
             'publication_date': pub_date
         }
     except Exception as e:
+        st.error(f"Error fetching content from {url}: {str(e)}")
         return None
 
 def extract_publication_date(soup):
@@ -126,34 +127,56 @@ def extract_publication_date(soup):
     ]
     
     for tag_name, attrs in date_selectors:
-        element = soup.find(tag_name, attrs)
-        if element:
-            date_str = element.get('content') or element.get('datetime') or element.get_text()
-            if date_str:
-                try:
+        try:
+            element = soup.find(tag_name, attrs)
+            if element:
+                date_str = element.get('content') or element.get('datetime') or element.get_text()
+                if date_str:
                     # Try to parse various date formats
-                    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%fZ', '%B %d, %Y']:
+                    date_formats = [
+                        '%Y-%m-%d',
+                        '%Y-%m-%dT%H:%M:%S',
+                        '%Y-%m-%dT%H:%M:%SZ',
+                        '%Y-%m-%dT%H:%M:%S.%fZ',
+                        '%B %d, %Y',
+                        '%b %d, %Y',
+                        '%m/%d/%Y',
+                        '%d/%m/%Y'
+                    ]
+                    
+                    for fmt in date_formats:
                         try:
-                            return datetime.strptime(date_str.split('T')[0], '%Y-%m-%d').strftime('%Y-%m-%d')
-                        except:
+                            # Clean the date string first
+                            clean_date = date_str.split('T')[0].strip()
+                            parsed_date = datetime.strptime(clean_date, fmt)
+                            return parsed_date.strftime('%Y-%m-%d')
+                        except ValueError:
                             continue
-                except:
-                    continue
+        except Exception:
+            continue
     
     # Fallback: look for date patterns in text
-    text = soup.get_text()
-    date_patterns = [
-        r'(\w+ \d{1,2}, \d{4})',  # January 15, 2024
-        r'(\d{1,2}/\d{1,2}/\d{4})',  # 01/15/2024
-        r'(\d{4}-\d{2}-\d{2})',  # 2024-01-15
-    ]
+    try:
+        text = soup.get_text()
+        date_patterns = [
+            (r'(\w+\s+\d{1,2},\s+\d{4})', '%B %d, %Y'),  # January 15, 2024
+            (r'(\w+\s+\d{1,2}\s+\d{4})', '%B %d %Y'),    # January 15 2024
+            (r'(\d{1,2}/\d{1,2}/\d{4})', '%m/%d/%Y'),    # 01/15/2024
+            (r'(\d{4}-\d{2}-\d{2})', '%Y-%m-%d'),        # 2024-01-15
+        ]
+        
+        for pattern, fmt in date_patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                try:
+                    parsed_date = datetime.strptime(matches[0], fmt)
+                    return parsed_date.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+    except Exception:
+        pass
     
-    for pattern in date_patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            return matches[0]
-    
-    return datetime.now().strftime('%Y-%m-%d')  # Default to today
+    return None  # Return None if no date found
 
 def generate_summary(text: str, max_sentences: int = 3) -> str:
     """Generate a simple extractive summary from text"""
@@ -202,17 +225,20 @@ def extract_contract_value(text: str):
     for pattern in patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
         if matches:
-            value_str = matches[0].replace(',', '')
-            value = float(value_str)
-            
-            if 'million' in pattern or ' m\\b' in pattern:
-                return value
-            elif 'billion' in pattern or ' b\\b' in pattern:
-                return value * 1000
-            elif 'thousand' in pattern or ' k\\b' in pattern:
-                return value / 1000
-            else:
-                return value / 1000000
+            try:
+                value_str = matches[0].replace(',', '')
+                value = float(value_str)
+                
+                if 'million' in pattern or ' m\\b' in pattern:
+                    return value
+                elif 'billion' in pattern or ' b\\b' in pattern:
+                    return value * 1000
+                elif 'thousand' in pattern or ' k\\b' in pattern:
+                    return value / 1000
+                else:
+                    return value / 1000000
+            except ValueError:
+                continue
     
     return None
 
@@ -232,11 +258,14 @@ def extract_duration(text: str):
     for pattern in patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
         if matches:
-            duration = int(matches[0])
-            if 'year' in pattern:
-                return duration * 12
-            else:
-                return duration
+            try:
+                duration = int(matches[0])
+                if 'year' in pattern:
+                    return duration * 12
+                else:
+                    return duration
+            except ValueError:
+                continue
     
     return None
 
@@ -270,40 +299,44 @@ def extract_service_type(text: str):
 
 def process_contract_page(url: str):
     """Process a single page and extract contract information"""
-    content_data = fetch_page_content(url)
-    
-    if not content_data:
+    try:
+        content_data = fetch_page_content(url)
+        
+        if not content_data:
+            return None
+        
+        content = content_data['text']
+        original_text = content_data['original_text']
+        
+        # Filter for pages mentioning "contract"
+        if 'contract' not in content:
+            return None
+        
+        # Extract information
+        contract_value = extract_contract_value(content)
+        duration = extract_duration(content)
+        organizations = extract_organizations(original_text)
+        service_type = extract_service_type(content)
+        summary = generate_summary(original_text)
+        
+        # Assign vendor and client
+        vendor = organizations[0] if len(organizations) > 0 else None
+        client = organizations[1] if len(organizations) > 1 else None
+        
+        return {
+            'URL': url,
+            'Title': content_data['title'],
+            'Announcement Date': content_data['publication_date'],
+            'Summary': summary,
+            'Estimated Value (USD Millions)': contract_value,
+            'Vendor': vendor,
+            'Client': client,
+            'Contract Duration (Months)': duration,
+            'Service Type': service_type
+        }
+    except Exception as e:
+        st.error(f"Error processing {url}: {str(e)}")
         return None
-    
-    content = content_data['text']
-    original_text = content_data['original_text']
-    
-    # Filter for pages mentioning "contract"
-    if 'contract' not in content:
-        return None
-    
-    # Extract information
-    contract_value = extract_contract_value(content)
-    duration = extract_duration(content)
-    organizations = extract_organizations(original_text)
-    service_type = extract_service_type(content)
-    summary = generate_summary(original_text)
-    
-    # Assign vendor and client
-    vendor = organizations[0] if len(organizations) > 0 else None
-    client = organizations[1] if len(organizations) > 1 else None
-    
-    return {
-        'URL': url,
-        'Title': content_data['title'],
-        'Announcement Date': content_data['publication_date'],
-        'Summary': summary,
-        'Estimated Value (USD Millions)': contract_value,
-        'Vendor': vendor,
-        'Client': client,
-        'Contract Duration (Months)': duration,
-        'Service Type': service_type
-    }
 
 def main():
     st.set_page_config(page_title="IT Contract Search", page_icon="🔍", layout="wide")
@@ -573,20 +606,26 @@ def process_urls_with_date_filter(urls: List[str], date_range: Optional[tuple] =
                 # Apply date filter if specified
                 if date_range:
                     start_date, end_date = date_range
-                    try:
-                        # Parse the announcement date
-                        announcement_date = datetime.strptime(result['Announcement Date'], '%Y-%m-%d').date()
-                        
-                        # Check if date is within range
-                        if start_date <= announcement_date <= end_date:
-                            results.append(result)
-                        else:
-                            st.info(f"Filtered out: {result['Title'][:50]}... (Date: {result['Announcement Date']})")
-                    except (ValueError, TypeError):
-                        # If date parsing fails, include the result but note the issue
-                        result['Announcement Date'] = f"{result['Announcement Date']} (date format unclear)"
+                    
+                    # If no date was extracted, include the result (as per your requirement)
+                    if result['Announcement Date'] is None:
+                        st.info(f"No date found for: {result['Title'][:50]}... - Including in results")
                         results.append(result)
-                        st.warning(f"Could not parse date for: {url[:50]}...")
+                    else:
+                        try:
+                            # Parse the announcement date
+                            announcement_date = datetime.strptime(result['Announcement Date'], '%Y-%m-%d').date()
+                            
+                            # Check if date is within range
+                            if start_date <= announcement_date <= end_date:
+                                results.append(result)
+                            else:
+                                st.info(f"Filtered out: {result['Title'][:50]}... (Date: {result['Announcement Date']})")
+                        except (ValueError, TypeError):
+                            # If date parsing fails, include the result
+                            st.info(f"Could not parse date for: {result['Title'][:50]}... - Including in results")
+                            result['Announcement Date'] = f"{result['Announcement Date']} (unparseable)"
+                            results.append(result)
                 else:
                     results.append(result)
         except Exception as e:
@@ -601,7 +640,7 @@ def process_urls_with_date_filter(urls: List[str], date_range: Optional[tuple] =
     if results:
         # Show filtering summary if date filter was used
         if date_range:
-            st.info(f"Date filter applied: {date_range[0]} to {date_range[1]} - Found {len(results)} contracts in date range")
+            st.info(f"Date filter applied: {date_range[0]} to {date_range[1]} - Found {len(results)} contracts (including those with no extractable date)")
         
         display_results(results)
     else:
@@ -620,7 +659,9 @@ def display_results(results: List[Dict]):
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        total_value = df['Estimated Value (USD Millions)'].sum()
+        # Handle None values in contract value calculation
+        valid_values = df['Estimated Value (USD Millions)'].dropna()
+        total_value = valid_values.sum() if len(valid_values) > 0 else 0
         st.metric("Total Contract Value", f"${total_value:.1f}M" if total_value > 0 else "N/A")
     
     with col2:
@@ -647,7 +688,10 @@ def display_results(results: List[Dict]):
                 st.write(row['Summary'])
                 
                 st.write(f"**URL:** [{row['URL']}]({row['URL']})")
-                st.write(f"**Announcement Date:** {row['Announcement Date']}")
+                
+                # Handle None date values
+                date_display = row['Announcement Date'] if row['Announcement Date'] else "Date not found"
+                st.write(f"**Announcement Date:** {date_display}")
                 
                 if row['Vendor']:
                     st.write(f"**Vendor:** {row['Vendor']}")
